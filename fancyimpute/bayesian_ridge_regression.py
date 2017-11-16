@@ -44,6 +44,10 @@ class BayesianRidgeRegression(object):
         self.normalize_lambda = normalize_lambda
 
     def fit(self, X, y, inverse_covariance=None):
+        print("X")
+        print(X)
+        print("y")
+        print(y)
         if self.add_ones:
             X_ones = self.add_column_of_ones(X)
         else:
