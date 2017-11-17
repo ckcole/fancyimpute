@@ -20,6 +20,8 @@ import numpy as np
 from .bayesian_ridge_regression import BayesianRidgeRegression
 from .solver import Solver
 
+from sklearn.linear_model import LogisticRegression
+
 
 class MICE(Solver):
     """
@@ -47,12 +49,24 @@ class MICE(Solver):
         n_pmm_neighbors : int
             Number of nearest neighbors for PMM, defaults to 5.
 
-        model : predictor function
-            A model that has fit, predict, and predict_dist methods.
+        impute_models : dictionary
+            Keys are user-defined types and values are models that
+            have fit, predict, and predict_dist methods.
+            For numeric (float or integer) columns:
             Defaults to BayesianRidgeRegression(lambda_reg=0.001).
             Note that the regularization parameter lambda_reg
             is by default scaled by np.linalg.norm(np.dot(X.T,X)).
-            Sensible lambda_regs to try: 0.25, 0.1, 0.01, 0.001, 0.0001.
+            Sensible lambda_regs to try: 0.1, 0.01, 0.001, 0.0001.
+            For boolean columns:
+            Defaults to sklearn.linear_model.LogisticRegression.
+
+        impute_methods : dictionary
+            Keys are column indices and values are type of model to apply.
+            The types are user-defined and must match keys in the impute_models
+            field.
+            If no methods are specified in the call to .complete, all columns
+            are treated as being of type numeric, mirroring the default behavior
+            of the original fancyimpute.MICE.
 
         n_nearest_columns : int
             Number of other columns to use to estimate current column.
@@ -70,6 +84,9 @@ class MICE(Solver):
         max_value : float
             Maximum possible imputed value
 
+        seed : int
+            Value used to set the random seed.
+
         verbose : boolean
     """
 
@@ -80,11 +97,15 @@ class MICE(Solver):
             n_burn_in=10,  # this many replicates will be thrown away
             n_pmm_neighbors=5,  # number of nearest neighbors in PMM
             impute_type='col',  # also can be pmm
-            model=BayesianRidgeRegression(lambda_reg=0.001, add_ones=True),
+            impute_models={
+                'numeric': BayesianRidgeRegression(lambda_reg=0.001, add_ones=True),
+                'boolean': LogisticRegression(fit_intercept=True, random_state=1)
+            },
             n_nearest_columns=np.infty,
             init_fill_method="mean",
             min_value=None,
             max_value=None,
+            seed=None,
             verbose=True):
         """
         Parameters
@@ -107,12 +128,24 @@ class MICE(Solver):
         n_pmm_neighbors : int
             Number of nearest neighbors for PMM, defaults to 5.
 
-        model : predictor function
-            A model that has fit, predict, and predict_dist methods.
+        impute_models : dictionary of predictors
+            Keys are user-defined types and values are models that
+            have fit, predict, and predict_dist methods.
+            For numeric (float or integer) columns:
             Defaults to BayesianRidgeRegression(lambda_reg=0.001).
             Note that the regularization parameter lambda_reg
             is by default scaled by np.linalg.norm(np.dot(X.T,X)).
             Sensible lambda_regs to try: 0.1, 0.01, 0.001, 0.0001.
+            For boolean columns:
+            Defaults to sklearn.linear_model.LogisticRegression.
+
+        impute_methods : dictionary of methods
+            Keys are column indices and values are type of model to apply.
+            The types are user-defined and must match keys in the impute_models
+            field.
+            If no methods are specified in the call to .complete, all columns
+            are treated as being of type numeric, mirroring the default behavior
+            of the original fancyimpute.MICE.
 
         n_nearest_columns : int
             Number of other columns to use to estimate current column.
@@ -123,6 +156,9 @@ class MICE(Solver):
             Valid values: {"mean", "median", or "random"}
             (the latter meaning fill with random samples from the observed
             values of a column)
+
+        seed : int
+            Value used to set the random seed.
 
         verbose : boolean
         """
@@ -136,9 +172,11 @@ class MICE(Solver):
         self.n_burn_in = n_burn_in
         self.n_pmm_neighbors = n_pmm_neighbors
         self.impute_type = impute_type
-        self.model = model
+        self.impute_methods = {}
+        self.impute_models = impute_models
         self.n_nearest_columns = n_nearest_columns
         self.verbose = verbose
+        self.seed = seed
 
     def perform_imputation_round(
             self,
@@ -195,11 +233,16 @@ class MICE(Solver):
                         p=p)
                 X_other_cols = X_filled[:, other_column_indices]
                 X_other_cols_observed = X_other_cols[observed_row_mask_for_this_col]
-                brr = self.model
-                brr.fit(
-                    X_other_cols_observed,
-                    column_values_observed,
-                    inverse_covariance=None)
+                brr = self.impute_models[self.impute_methods[col_idx]]
+                if self.impute_methods[col_idx] == 'numeric':
+                    brr.fit(
+                        X_other_cols_observed,
+                        column_values_observed,
+                        inverse_covariance=None)
+                elif self.impute_methods[col_idx] == 'boolean':
+                    brr.fit(
+                        X_other_cols_observed,
+                        column_values_observed)
 
                 # Now we choose the row method (PMM) or the column method.
                 if self.impute_type == 'pmm':  # this is the PMM procedure
@@ -225,14 +268,17 @@ class MICE(Solver):
                     imputed_values = column_values_observed[imputed_indices]
                 elif self.impute_type == 'col':
                     X_other_cols_missing = X_other_cols[missing_row_mask_for_this_col]
-                    # predict values for missing values using posterior predictive draws
-                    # see the end of this:
-                    # https://www.cs.utah.edu/~fletcher/cs6957/lectures/BayesianLinearRegression.pdf
-                    mus, sigmas_squared = brr.predict_dist(X_other_cols_missing)
-                    # inplace sqrt of sigma_squared
-                    sigmas = sigmas_squared
-                    np.sqrt(sigmas_squared, out=sigmas)
-                    imputed_values = np.random.normal(mus, sigmas)
+                    if self.impute_methods[col_idx] == 'numeric':
+                        # predict values for missing values using posterior predictive draws
+                        # see the end of this:
+                        # https://www.cs.utah.edu/~fletcher/cs6957/lectures/BayesianLinearRegression.pdf
+                        mus, sigmas_squared = brr.predict_dist(X_other_cols_missing)
+                        # inplace sqrt of sigma_squared
+                        sigmas = sigmas_squared
+                        np.sqrt(sigmas_squared, out=sigmas)
+                        imputed_values = np.random.normal(mus, sigmas)
+                    elif self.impute_methods[col_idx] == 'boolean':
+                        imputed_values = brr.predict(X_other_cols_missing)
                 imputed_values = self.clip(imputed_values)
                 X_filled[missing_row_mask_for_this_col, col_idx] = imputed_values
         return X_filled
@@ -327,7 +373,20 @@ class MICE(Solver):
                 results_list.append(X_filled[missing_mask])
         return np.array(results_list), missing_mask
 
-    def complete(self, X):
+    def complete(self, X, methods=None):
+        if methods:
+            # User-specified column by column
+            self.impute_methods = methods
+        else:
+            # None specified, default to normal
+            self.impute_methods = {
+                col_idx: 'numeric' for col_idx in range(X.shape[1])
+            }
+        if set(self.impute_methods.values()).difference(['numeric', 'boolean']):
+            raise ValueError("Invalid imputation methods %s" % (
+                set(self.impute_methods.values())))
+        if self.seed is not None:
+            np.random.seed(self.seed)
         if self.verbose:
             print("[MICE] Completing matrix with shape %s" % (X.shape,))
         X_completed = np.array(X.copy())
