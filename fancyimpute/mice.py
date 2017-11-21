@@ -86,10 +86,16 @@ class MICE(Solver):
             Useful when number of columns is huge.
             Default is to use all columns.
 
-        init_fill_method : str
+        init_fill_methods : dict
+            Keys are column indices and values are initial fill methods to be
+            used for that column.
             Valid values: {"mean", "median", or "random"}
             (the latter meaning fill with random samples from the observed
             values of a column)
+
+        default_init_fill_method : str
+            The default initial fill method to use.
+            Defaults to mean.
 
         min_value : float
             Minimum possible imputed value
@@ -116,7 +122,7 @@ class MICE(Solver):
             },
             default_impute_method='numeric',
             n_nearest_columns=np.infty,
-            init_fill_method="mean",
+            default_init_fill_method="mean",
             min_value=None,
             max_value=None,
             seed=None,
@@ -171,10 +177,16 @@ class MICE(Solver):
             Useful when number of columns is huge.
             Default is to use all columns.
 
-        init_fill_method : str
+        init_fill_methods : dict
+            Keys are column indices and values are initial fill methods to be
+            used for that column.
             Valid values: {"mean", "median", or "random"}
             (the latter meaning fill with random samples from the observed
             values of a column)
+
+        default_init_fill_method : str
+            The default initial fill method to use.
+            Defaults to mean.
 
         seed : int
             Value used to set the random seed.
@@ -186,13 +198,15 @@ class MICE(Solver):
             n_imputations=n_imputations,
             min_value=min_value,
             max_value=max_value,
-            fill_method=init_fill_method)
+            fill_method=default_init_fill_method)
         self.visit_sequence = visit_sequence
         self.n_burn_in = n_burn_in
         self.n_pmm_neighbors = n_pmm_neighbors
         self.impute_type = impute_type
         self.impute_methods = {}
         self.impute_models = impute_models
+        self.init_fill_methods = {}
+        self.default_init_fill_method = default_init_fill_method
         self.n_nearest_columns = n_nearest_columns
         self.verbose = verbose
         self.seed = seed
@@ -317,14 +331,14 @@ class MICE(Solver):
                 column = X_filled[:, col_idx]
                 observed_column = column[observed_row_mask_for_col]
 
-                if self.fill_method == "mean":
+                if self.init_fill_methods[col_idx] == "mean":
                     fill_values = np.mean(observed_column)
-                elif self.fill_method == "median":
+                elif self.init_fill_methods[col_idx] == "median":
                     fill_values = np.median(observed_column)
-                elif self.fill_method == "random":
+                elif self.init_fill_methods[col_idx] == "random":
                     fill_values = np.random.choice(observed_column, n_missing)
                 else:
-                    raise ValueError("Invalid fill method %s" % self.fill_method)
+                    raise ValueError("Invalid fill method %s" % self.init_fill_methods[col_idx])
                 X_filled[missing_mask_col, col_idx] = fill_values
         return X_filled
 
@@ -393,19 +407,30 @@ class MICE(Solver):
         return np.array(results_list), missing_mask
 
     def complete(self, X, methods=None):
+        # Set imputation methods
         if methods:
-            # User-specified column by column
             self.impute_methods = methods
         else:
-            # None specified, default to normal
             self.impute_methods = {
                 col_idx: self.default_impute_method for col_idx in range(X.shape[1])
             }
         if set(self.impute_methods.values()).difference(ALLOWED_METHODS):
             raise ValueError("Invalid imputation methods %s" % (
                 set(self.impute_methods.values())))
+
+        # Set initial fill methods based on imputation methods
+        self.init_fill_methods = {}
+        for col_idx in range(X.shape[1]):
+            if self.impute_methods[col_idx] == 'boolean':
+                self.init_fill_methods[col_idx] = 'random'
+            else:
+                self.init_fill_methods[col_idx] = self.default_init_fill_method
+
+        # Set random seed
         if self.seed is not None:
             np.random.seed(self.seed)
+
+        # Perform the imputation
         if self.verbose:
             print("[MICE] Completing matrix with shape %s" % (X.shape,))
         X_completed = np.array(X.copy())
