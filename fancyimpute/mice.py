@@ -22,6 +22,14 @@ from .solver import Solver
 
 from sklearn.linear_model import LogisticRegression
 
+# TODO avoid hardcoding this
+# Issue: different methods have fit methods with different input parameters,
+# so we still need to know the method "type" in order to know which to call.
+ALLOWED_METHODS = [
+    'numeric',
+    'boolean',
+]
+
 
 class MICE(Solver):
     """
@@ -49,7 +57,7 @@ class MICE(Solver):
         n_pmm_neighbors : int
             Number of nearest neighbors for PMM, defaults to 5.
 
-        impute_models : dictionary
+        impute_models : dict
             Keys are user-defined types and values are models that
             have fit, predict, and predict_dist methods.
             For numeric (float or integer) columns:
@@ -60,13 +68,18 @@ class MICE(Solver):
             For boolean columns:
             Defaults to sklearn.linear_model.LogisticRegression.
 
-        impute_methods : dictionary
+        impute_methods : dict
             Keys are column indices and values are type of model to apply.
             The types are user-defined and must match keys in the impute_models
             field.
             If no methods are specified in the call to .complete, all columns
             are treated as being of type numeric, mirroring the default behavior
             of the original fancyimpute.MICE.
+
+        default_impute_method : str
+            The default imputation method to apply if no methods are specified.
+            Defaults to 'numeric', which corresponds to the use of a Bayesian
+            Ridge Regression model.
 
         n_nearest_columns : int
             Number of other columns to use to estimate current column.
@@ -101,6 +114,7 @@ class MICE(Solver):
                 'numeric': BayesianRidgeRegression(lambda_reg=0.001, add_ones=True),
                 'boolean': LogisticRegression(fit_intercept=True, random_state=1)
             },
+            default_impute_method='numeric',
             n_nearest_columns=np.infty,
             init_fill_method="mean",
             min_value=None,
@@ -128,7 +142,7 @@ class MICE(Solver):
         n_pmm_neighbors : int
             Number of nearest neighbors for PMM, defaults to 5.
 
-        impute_models : dictionary of predictors
+        impute_models : dict of predictors
             Keys are user-defined types and values are models that
             have fit, predict, and predict_dist methods.
             For numeric (float or integer) columns:
@@ -139,13 +153,18 @@ class MICE(Solver):
             For boolean columns:
             Defaults to sklearn.linear_model.LogisticRegression.
 
-        impute_methods : dictionary of methods
+        impute_methods : dict of methods
             Keys are column indices and values are type of model to apply.
             The types are user-defined and must match keys in the impute_models
             field.
             If no methods are specified in the call to .complete, all columns
             are treated as being of type numeric, mirroring the default behavior
             of the original fancyimpute.MICE.
+
+        default_impute_method : str
+            The default imputation method to apply if no methods are specified.
+            Defaults to 'numeric', which corresponds to the use of a Bayesian
+            Ridge Regression model.
 
         n_nearest_columns : int
             Number of other columns to use to estimate current column.
@@ -380,9 +399,9 @@ class MICE(Solver):
         else:
             # None specified, default to normal
             self.impute_methods = {
-                col_idx: 'numeric' for col_idx in range(X.shape[1])
+                col_idx: self.default_impute_method for col_idx in range(X.shape[1])
             }
-        if set(self.impute_methods.values()).difference(['numeric', 'boolean']):
+        if set(self.impute_methods.values()).difference(ALLOWED_METHODS):
             raise ValueError("Invalid imputation methods %s" % (
                 set(self.impute_methods.values())))
         if self.seed is not None:
