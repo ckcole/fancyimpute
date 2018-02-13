@@ -16,6 +16,7 @@ from time import time
 
 from six.moves import range
 import numpy as np
+import pickle
 
 from .bayesian_ridge_regression import BayesianRidgeRegression
 from .solver import Solver
@@ -70,6 +71,22 @@ class MICE(Solver):
         max_value : float
             Maximum possible imputed value
 
+        fitted_models : array
+            Holds fitted models for each column through iterations.
+            Rows correspond to iterations, columns correspond to the columns
+            in the array to complete.
+
+        visit_indices : array
+            Order in which columns were visited during imputation.
+
+        column_init_values : array
+            Initial values used to fill missing values by column,
+            depending on choice of init_fill_method.
+
+        seed : int
+            Used to set the random seed in order for results to be
+            reproducible.
+
         verbose : boolean
     """
 
@@ -85,6 +102,7 @@ class MICE(Solver):
             init_fill_method="mean",
             min_value=None,
             max_value=None,
+            seed=None,
             verbose=True):
         """
         Parameters
@@ -124,6 +142,22 @@ class MICE(Solver):
             (the latter meaning fill with random samples from the observed
             values of a column)
 
+        fitted_models : array
+            Holds fitted models for each column through iterations.
+            Rows correspond to iterations, columns correspond to the columns
+            in the array to complete.
+
+        visit_indices : array
+            Order in which columns were visited during imputation.
+
+        column_init_values : array
+            Initial values used to fill missing values by column,
+            depending on choice of init_fill_method.
+
+        seed : int
+            Used to set the random seed in order for results to be
+            reproducible.
+
         verbose : boolean
         """
         Solver.__init__(
@@ -139,15 +173,25 @@ class MICE(Solver):
         self.model = model
         self.n_nearest_columns = n_nearest_columns
         self.verbose = verbose
+        self.fitted_models = None
+        self.visit_indices = None
+        self.column_init_values = None
+        self.seed = seed
+        if self.seed is not None:
+            np.random.seed(self.seed)
 
     def perform_imputation_round(
             self,
             X_filled,
             missing_mask,
             observed_mask,
-            visit_indices):
+            visit_indices,
+            round_index=None):
         """
         Does one entire round-robin set of updates.
+
+        If the index of the round is specified, save the fitted models.
+        TODO reset the seed here to ensure we'll always fit the same model?
         """
         n_rows, n_cols = X_filled.shape
 
@@ -200,6 +244,9 @@ class MICE(Solver):
                     X_other_cols_observed,
                     column_values_observed,
                     inverse_covariance=None)
+                # Save fitted model for this column
+                if round_index is not None:
+                    self.fitted_models[round_index][col_idx] = brr
 
                 # Now we choose the row method (PMM) or the column method.
                 if self.impute_type == 'pmm':  # this is the PMM procedure
@@ -244,6 +291,7 @@ class MICE(Solver):
         # lay out X's elements in Fortran/column-major order since it's
         # often going to be accessed one column at a time
         X_filled = X.copy(order="F")
+        self.column_init_values = np.zeros(X.shape[1])
         for col_idx in visit_indices:
             missing_mask_col = missing_mask[:, col_idx]
             n_missing = missing_mask_col.sum()
@@ -260,6 +308,7 @@ class MICE(Solver):
                     fill_values = np.random.choice(observed_column, n_missing)
                 else:
                     raise ValueError("Invalid fill method %s" % self.fill_method)
+                self.column_init_values[col_idx] = fill_values
                 X_filled[missing_mask_col, col_idx] = fill_values
         return X_filled
 
@@ -296,6 +345,7 @@ class MICE(Solver):
         self._check_missing_value_mask(missing_mask)
 
         visit_indices = self.get_visit_indices(missing_mask)
+        self.visit_indices = visit_indices
         # since we're accessing the missing mask one column at a time,
         # lay it out so that columns are contiguous
         missing_mask = np.asarray(missing_mask, order="F")
@@ -322,7 +372,8 @@ class MICE(Solver):
                 X_filled=X_filled,
                 missing_mask=missing_mask,
                 observed_mask=observed_mask,
-                visit_indices=visit_indices)
+                visit_indices=visit_indices,
+                round_index=m)
             if m >= self.n_burn_in:
                 results_list.append(X_filled[missing_mask])
         return np.array(results_list), missing_mask
@@ -330,9 +381,121 @@ class MICE(Solver):
     def complete(self, X):
         if self.verbose:
             print("[MICE] Completing matrix with shape %s" % (X.shape,))
+        self.fitted_models = np.array(
+            [[self.model for _ in range(X.shape[1])] for _ in range(self.n_burn_in + self.n_imputations)]
+        )
         X_completed = np.array(X.copy())
         imputed_arrays, missing_mask = self.multiple_imputations(X)
         # average the imputed values for each feature
         average_imputated_values = imputed_arrays.mean(axis=0)
         X_completed[missing_mask] = average_imputated_values
+        return X_completed
+
+    def pickle_model(self, filename=None):
+        """Export fitted models to a pickle file."""
+        if self.fitted_models is None:
+            print("No fitted models to save!")
+            return
+
+        if filename is None:
+            filename = "fitted_models.pkl"
+
+        # Save instance parameters
+        with open(filename, 'w') as fp:
+            pickle.dump(self.__dict__, fp)
+
+    def complete_row(self, X, fitted_models=None, seed=None):
+        """
+        Complete missing values in a row using pre-fitted models.
+
+        Note X and fitted models must be of type numpy array!
+        """
+        if fitted_models is None:
+            fitted_models = self.fitted_models
+
+        # Check if fitted_models is set or any values are missing
+        if fitted_models is None:
+            raise Exception("No saved fitted models!")
+
+        # Check dimensions, skip if not row-like or wrong number of columns
+        if X.ndim != 1:
+            raise Exception("Input array is not row-like!")
+        elif X.shape[0] != self.fitted_models.shape[1]:
+            raise Exception("Input array has incorrect length!")
+
+        # TODO compare number of columns to n_nearest_columns (should be <=)
+        # This will affect the definition of other_column_indices
+
+        # Check impute type
+        if self.impute_type != 'col':
+            raise Exception("Rows can only be completed if impute_type is 'col'!")
+
+        # Check for missing values
+        X_filled = X.copy()
+        missing_mask = np.isnan(X_filled)
+        n_missing = missing_mask.sum(axis=0)
+        if n_missing == 0:
+            print("The input row contains no missing data!")
+            return X_filled
+
+        n_cols = X_filled.shape[0]
+        ordered_column_indices = np.arange(n_cols)
+
+        # Check if visit indices are saved
+        if self.visit_indices is None:
+            raise Exception("No saved visit indices!")
+
+        # Check if column init values are saved
+        if self.column_init_values is None:
+            raise Exception("No saved initial column values!")
+
+        # Initialize missing values
+        for col_idx in self.visit_indices:
+            if missing_mask[col_idx]:
+                X_filled[col_idx] = self.column_init_values[col_idx]
+
+        # Seeding ensures reproducibility
+        if seed is None:
+            seed = self.seed
+        if seed is not None:
+            np.random.seed(seed)
+        else:
+            print("Random seed not set, results will not be reproducible!")
+
+        results_list = []
+
+        # Loop over imputation rounds
+        for m in range(self.n_burn_in + self.n_imputations):
+            # Loop over columns
+            for col_idx in self.visit_indices:
+                if missing_mask[col_idx]:
+                    # Which columns were initially present?
+                    # Case when using all other columns for imputation
+                    other_column_indices = np.concatenate([
+                        ordered_column_indices[:col_idx],
+                        ordered_column_indices[col_idx + 1:]
+                    ])
+                    X_other_cols = X_filled[other_column_indices]
+                    # Load the model for this round and column
+                    brr = fitted_models[m][col_idx]
+                    X_other_cols_missing = np.array([X_other_cols])  # no other rows!
+                    mus, sigmas_squared = brr.predict_dist(X_other_cols_missing)
+                    sigmas = sigmas_squared
+                    np.sqrt(sigmas_squared, out=sigmas)
+                    mus = mus[0]
+                    sigmas = sigmas[0]
+                    # print("Sampling from a normal distribution with mu={} and sigma={}".format(mus, sigmas))
+                    imputed_value = np.random.normal(mus, sigmas)
+                    imputed_value = self.clip(imputed_value)
+                    X_filled[col_idx] = imputed_value
+            # Save the imputed values
+            if m >= self.n_burn_in:
+                results_list.append(X_filled[missing_mask])
+
+        # return X_filled
+        imputed_arrays = np.array(results_list)
+        X_completed = np.array(X.copy())
+        # average the imputed values for each feature
+        average_imputed_values = imputed_arrays.mean(axis=0)
+        X_completed[missing_mask] = average_imputed_values
         return X_completed
