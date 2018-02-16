@@ -191,8 +191,10 @@ class MICE(Solver):
         Does one entire round-robin set of updates.
 
         If the index of the round is specified, save the fitted models.
-        TODO reset the seed here to ensure we'll always fit the same model?
         """
+        if self.seed is not None:
+            np.random.seed(self.seed)
+
         n_rows, n_cols = X_filled.shape
 
         if n_cols > self.n_nearest_columns:
@@ -246,7 +248,7 @@ class MICE(Solver):
                     inverse_covariance=None)
                 # Save fitted model for this column
                 if round_index is not None:
-                    self.fitted_models[round_index][col_idx] = brr
+                    self.fitted_models[round_index, col_idx] = brr.copy()
 
                 # Now we choose the row method (PMM) or the column method.
                 if self.impute_type == 'pmm':  # this is the PMM procedure
@@ -382,7 +384,7 @@ class MICE(Solver):
         if self.verbose:
             print("[MICE] Completing matrix with shape %s" % (X.shape,))
         self.fitted_models = np.array(
-            [[self.model for _ in range(X.shape[1])] for _ in range(self.n_burn_in + self.n_imputations)]
+            [[None for _ in range(X.shape[1])] for _ in range(self.n_burn_in + self.n_imputations)]
         )
         X_completed = np.array(X.copy())
         imputed_arrays, missing_mask = self.multiple_imputations(X)
@@ -484,7 +486,6 @@ class MICE(Solver):
                     np.sqrt(sigmas_squared, out=sigmas)
                     mus = mus[0]
                     sigmas = sigmas[0]
-                    # print("Sampling from a normal distribution with mu={} and sigma={}".format(mus, sigmas))
                     imputed_value = np.random.normal(mus, sigmas)
                     imputed_value = self.clip(imputed_value)
                     X_filled[col_idx] = imputed_value

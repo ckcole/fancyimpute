@@ -132,3 +132,17 @@ class BayesianRidgeRegression(object):
             # strange cases turning negative
             sigmas_squared[sigmas_squared <= eps] = eps
         return mus, sigmas_squared
+
+    def copy(self):
+        """
+        Method to copy an instance of the class.
+        """
+        brr = BayesianRidgeRegression(
+            lambda_reg=self.lambda_reg,
+            add_ones=self.add_ones,
+            normalize_lambda=self.normalize_lambda,
+        )
+        brr.covar = self.covar
+        brr.beta_estimate = self.beta_estimate
+        brr.sigma_squared_estimate = self.sigma_squared_estimate
+        return brr
