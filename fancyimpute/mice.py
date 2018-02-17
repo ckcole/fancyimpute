@@ -409,6 +409,7 @@ class MICE(Solver):
     def complete_row(self, X, fitted_models=None, seed=None):
         """
         Complete missing values in a row using pre-fitted models.
+        Specify a seed when testing to ensure reproducibility.
 
         Note X and fitted models must be of type numpy array!
         """
@@ -457,9 +458,8 @@ class MICE(Solver):
                 X_filled[col_idx] = self.column_init_values[col_idx]
 
         # Seeding ensures reproducibility
-        if seed is None:
-            seed = self.seed
         if seed is not None:
+            print("Turning off randomization by setting the seed.")
             np.random.seed(seed)
         else:
             print("Random seed not set, results will not be reproducible!")
