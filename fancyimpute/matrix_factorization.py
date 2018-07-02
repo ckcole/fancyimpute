@@ -12,7 +12,6 @@
 
 from __future__ import absolute_import, print_function, division
 
-import climate
 import downhill
 import numpy as np
 import theano

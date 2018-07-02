@@ -61,7 +61,6 @@ if __name__ == '__main__':
             'scikit-learn>=0.17.1',
             # used by MatrixFactorization
             'downhill',
-            'climate',
             'theano',
         ],
         long_description=readme,
